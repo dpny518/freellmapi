@@ -1,75 +1,147 @@
 import { getDb } from '../db/index.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
-import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
+import type { Platform, KeyStatus, ChatMessage } from '@freellmapi/shared/types.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const CONSECUTIVE_FAILURES_TO_DISABLE = 3;
+const MAX_RETRIES = 3;
+const BASE_RETRY_MS = 1000;
 
-// Track consecutive failures per key
+/**
+ * Track consecutive failures per key
+ */
 const failureCount = new Map<number, number>();
+const lastAttempt = new Map<number, number>();
+
+/**
+ * Generate exponential backoff delay
+ */
+function getDelay(attempt: number): number {
+  return BASE_RETRY_MS * Math.pow(2, attempt);
+}
+
+/**
+ * Logger with timestamp
+ */
+function logger(keyId: number, msg: string): void {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [Health][Key${keyId}] ${msg}`);
+}
 
 export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(keyId) as any;
-  if (!row) return 'error';
+  const keyRow = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(keyId) as any;
+  if (!keyRow) return 'error';
 
-  const provider = getProvider(row.platform as Platform);
+  const provider = getProvider(keyRow.platform as Platform);
   if (!provider) return 'error';
 
+  // Skip if already attempted recently and failing
+  const now = Date.now();
+  const lastTime = lastAttempt.get(keyId) || 0;
+  if (now - lastTime < 60 * 1000) { // 1 minute cooldown
+    logger(keyId, 'Skipping rapid retry');
+    return keyRow.status || 'healthy';
+  }
+  lastAttempt.set(keyId, now);
+
   try {
-    const apiKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
+    logger(keyId, 'Starting health validation');
+    const encryptedKey = keyRow.encrypted_key;
+    const iv = keyRow.iv;
+    const authTag = keyRow.auth_tag;
+    const apiKey = decrypt(encryptedKey, iv, authTag);
+
+    // 1. Quick key format validation
     const isValid = await provider.validateKey(apiKey);
+    if (!isValid) {
+      logger(keyId, 'Key validation failed (invalid signature/format)');
+      db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
+        .run('invalid', keyId);
+      return 'invalid';
+    }
 
-    const status: KeyStatus = isValid ? 'healthy' : 'invalid';
+    // 2. Real health test with retries
+    const testMessage: ChatMessage[] = [{ role: 'user', content: 'hello' }];
+    let testResponse = undefined;
 
-    db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
-      .run(status, keyId);
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        logger(keyId, `Attempt ${attempt + 1} - sending 'hello' to ${keyRow.platform}/${keyRow.model_id}`);
+        testResponse = await provider.chatCompletion(
+          apiKey,
+          testMessage,
+          keyRow.model_id || 'gpt-4o-mini' // Fallback to default model
+        );
 
-    if (isValid) {
-      failureCount.delete(keyId);
-    } else {
-      const count = (failureCount.get(keyId) ?? 0) + 1;
-      failureCount.set(keyId, count);
-
-      if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
-        db.prepare('UPDATE api_keys SET enabled = 0 WHERE id = ?').run(keyId);
-        console.log(`[Health] Auto-disabled key ${keyId} after ${count} consecutive failures`);
+        logger(keyId, `Provider responded (attempt ${attempt + 1})`);
+        break; // Success, exit retry loop
+      } catch (err: any) {
+        logger(keyId, `Attempt ${attempt + 1} failed: ${err.message}`);
+        if (attempt < MAX_RETRIES - 1) {
+          const delay = getDelay(attempt);
+          logger(keyId, `Waiting ${delay}ms before retry`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          throw err; // Re-throw on final attempt
+        }
       }
     }
 
-    return status;
+    // 3. Validate response structure
+    if (testResponse?.choices && testResponse.choices.length > 0) {
+      const choice = testResponse.choices[0].message?.content;
+      if (choice && choice.trim().length > 0) {
+        logger(keyId, `Health check passed: ${choice.substring(0, 30)}`);
+        db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
+          .run('healthy', keyId);
+        failureCount.delete(keyId);
+        return 'healthy';
+      } else {
+        logger(keyId, 'Empty response content');
+        const status: KeyStatus = 'error';
+        db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
+          .run(status, keyId);
+        return 'error';
+      }
+    } else {
+      logger(keyId, 'Missing choices in provider response');
+      const status: KeyStatus = 'error';
+      db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
+        .run(status, keyId);
+      return 'error';
+    }
+
   } catch (err: any) {
-    // Transport errors (DNS/timeout/TLS) — provider unreachable, not necessarily
-    // a bad key. Mark status='error' but do NOT increment failure counter — auto-
-    // disable is reserved for confirmed 401/403 (returned by validateKey as false).
-    console.error(`[Health] Key ${keyId} transport error:`, err.message);
-    db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
+    // 4. Transport/network errors
+    logger(keyId, `Transport error: ${err.message}`);
+    db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
       .run('error', keyId);
     return 'error';
   }
 }
 
-export async function checkAllKeys(): Promise<void> {
+export async function checkAllKeys(): Promise<{ id: number; status: KeyStatus }[]> {
   const db = getDb();
   const keys = db.prepare('SELECT id, platform FROM api_keys WHERE enabled = 1').all() as { id: number; platform: string }[];
 
-  console.log(`[Health] Checking ${keys.length} keys...`);
-
+  logger(0, `Checking ${keys.length} keys`);
+  const results: { id: number; status: KeyStatus }[] = [];
   for (const key of keys) {
-    await checkKeyHealth(key.id);
+    const status = await checkKeyHealth(key.id);
+    results.push({ id: key.id, status });
   }
-
-  console.log(`[Health] Check complete.`);
+  logger(0, 'Check complete');
+  return results;
 }
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
 export function startHealthChecker(): void {
   if (intervalId) return;
-  console.log(`[Health] Starting health checker (every ${CHECK_INTERVAL_MS / 1000}s)`);
+  logger(0, `Starting health checker (every ${CHECK_INTERVAL_MS / 1000}s)`);
   intervalId = setInterval(() => {
-    checkAllKeys().catch(err => console.error('[Health] Check failed:', err));
+    checkAllKeys().catch(err => logger(0, `Check failed: ${err.message}`));
   }, CHECK_INTERVAL_MS);
 }
 

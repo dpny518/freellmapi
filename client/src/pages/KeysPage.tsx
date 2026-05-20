@@ -1,12 +1,12 @@
-import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '@/lib/api'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { PageHeader } from '@/components/page-header'
-import type { ApiKey, Platform } from '../../../shared/types'
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { PageHeader } from '@/components/page-header';
+import type { ApiKey, Platform } from '../../../shared/types';
 
 const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'google', label: 'Google AI Studio' },
@@ -24,7 +24,7 @@ const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'kilo', label: 'Kilo Gateway (anon ok)' },
   { value: 'pollinations', label: 'Pollinations (anon ok)' },
   { value: 'llm7', label: 'LLM7 (anon ok)' },
-]
+];
 
 const statusDot: Record<string, string> = {
   healthy: 'bg-emerald-500',
@@ -32,7 +32,7 @@ const statusDot: Record<string, string> = {
   invalid: 'bg-rose-500',
   error: 'bg-rose-500',
   unknown: 'bg-muted-foreground/40',
-}
+};
 
 const statusLabel: Record<string, string> = {
   healthy: 'healthy',
@@ -40,48 +40,54 @@ const statusLabel: Record<string, string> = {
   invalid: 'invalid',
   error: 'error',
   unknown: 'unchecked',
-}
+};
 
 interface HealthPlatform {
-  platform: string
-  totalKeys: number
-  healthyKeys: number
-  rateLimitedKeys: number
-  invalidKeys: number
-  errorKeys: number
-  unknownKeys: number
+  platform: string;
+  totalKeys: number;
+  healthyKeys: number;
+  rateLimitedKeys: number;
+  invalidKeys: number;
+  errorKeys: number;
+  unknownKeys: number;
 }
 
 interface HealthData {
-  platforms: HealthPlatform[]
-  keys: { id: number; platform: string; status: string; lastCheckedAt: string | null }[]
+  platforms: HealthPlatform[];
+  keys: { id: number; platform: string; status: string; lastCheckedAt: string | null }[];
+}
+
+interface TestResult {
+  id: number;
+  status: 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown';
+  message?: string;
 }
 
 function UnifiedKeySection() {
-  const queryClient = useQueryClient()
-  const [showKey, setShowKey] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const queryClient = useQueryClient();
+  const [showKey, setShowKey] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const { data } = useQuery<{ apiKey: string }>({
     queryKey: ['unified-key'],
     queryFn: () => apiFetch('/api/settings/api-key'),
-  })
+  });
 
   const regenerate = useMutation({
     mutationFn: () => apiFetch('/api/settings/api-key/regenerate', { method: 'POST' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['unified-key'] }),
-  })
+  });
 
-  const apiKey = data?.apiKey ?? ''
-  const masked = apiKey ? apiKey.slice(0, 13) + '•'.repeat(32) : '…'
+  const apiKey = data?.apiKey ?? '';
+  const masked = apiKey ? apiKey.slice(0, 13) + '•'.repeat(32) : '…';
   const baseUrl = import.meta.env.DEV
     ? `http://${window.location.hostname}:${__SERVER_PORT__}/v1`
-    : `${window.location.origin}/v1`
+    : `${window.location.origin}/v1`;
 
   function copy() {
-    navigator.clipboard.writeText(apiKey)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    navigator.clipboard.writeText(apiKey);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   }
 
   return (
@@ -110,7 +116,7 @@ function UnifiedKeySection() {
         <Button variant="outline" size="sm" onClick={() => setShowKey(!showKey)}>
           {showKey ? 'Hide' : 'Show'}
         </Button>
-        <Button variant="outline" size="sm" onClick={copy}>
+        <Button variant="outline" size="sm" onClick={copy} className="ml-2">
           {copied ? 'Copied' : 'Copy'}
         </Button>
       </div>
@@ -122,82 +128,166 @@ function UnifiedKeySection() {
         <code className="font-mono">/v1/chat/completions</code>
       </div>
     </section>
-  )
+  );
 }
 
 export default function KeysPage() {
-  const queryClient = useQueryClient()
-  const [platform, setPlatform] = useState<Platform | ''>('')
-  const [apiKey, setApiKey] = useState('')
-  const [accountId, setAccountId] = useState('')
-  const [label, setLabel] = useState('')
+  const queryClient = useQueryClient();
+  const [platform, setPlatform] = useState<Platform | ''>('');
+  const [apiKey, setApiKey] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [label, setLabel] = useState('');
+  const [saveMessage, setSaveMessage] = useState('');
+  const [loadMessage, setLoadMessage] = useState('');
+  const [testResults, setTestResults] = useState<TestResult[]>([]);
+  const needsAccountId = platform === 'cloudflare';
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ['keys'],
     queryFn: () => apiFetch('/api/keys'),
-  })
+  });
 
   const { data: healthData } = useQuery<HealthData>({
     queryKey: ['health'],
     queryFn: () => apiFetch('/api/health'),
     refetchInterval: 30000,
-  })
+  });
 
   const addKey = useMutation({
     mutationFn: (body: { platform: string; key: string; label?: string }) =>
       apiFetch('/api/keys', { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-      queryClient.invalidateQueries({ queryKey: ['fallback'] })
-      setPlatform('')
-      setApiKey('')
-      setAccountId('')
-      setLabel('')
+      queryClient.invalidateQueries({ queryKey: ['keys'] });
+      queryClient.invalidateQueries({ queryKey: ['health'] });
+      queryClient.invalidateQueries({ queryKey: ['fallback'] });
+      setPlatform('');
+      setApiKey('');
+      setAccountId('');
+      setLabel('');
     },
-  })
+  });
 
   const deleteKey = useMutation({
     mutationFn: (id: number) => apiFetch(`/api/keys/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
+      queryClient.invalidateQueries({ queryKey: ['keys'] });
+      queryClient.invalidateQueries({ queryKey: ['health'] });
     },
-  })
+  });
 
   const checkAll = useMutation({
     mutationFn: () => apiFetch('/api/health/check-all', { method: 'POST' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
+      queryClient.invalidateQueries({ queryKey: ['health'] });
+      queryClient.invalidateQueries({ queryKey: ['keys'] });
     },
-  })
+  });
+
+  const testAllKeys = useMutation({
+    mutationFn: () => apiFetch<TestResult[]>('/api/health/check-all', { method: 'POST' as const }),
+    onSuccess: (results) => {
+      setTestResults(results);
+      queryClient.invalidateQueries({ queryKey: ['health'] });
+      queryClient.invalidateQueries({ queryKey: ['keys'] });
+    },
+  });
 
   const checkKey = useMutation({
     mutationFn: (keyId: number) => apiFetch(`/api/health/check/${keyId}`, { method: 'POST' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
+      queryClient.invalidateQueries({ queryKey: ['health'] });
+      queryClient.invalidateQueries({ queryKey: ['keys'] });
     },
-  })
+  });
 
-  const needsAccountId = platform === 'cloudflare'
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!platform || !apiKey) return
-    if (needsAccountId && !accountId) return
-    const key = needsAccountId ? `${accountId}:${apiKey}` : apiKey
-    addKey.mutate({ platform, key, label: label || undefined })
+  function saveKeysToFile() {
+    // Note: Actual API keys are not returned by the server for security.
+    // This saves metadata only (id, platform, label, status, etc.)
+    const dataToSave = keys.map(k => ({
+      id: k.id,
+      platform: k.platform,
+      label: k.label,
+      maskedKey: k.maskedKey,
+      status: k.status,
+    }));
+    const dataStr = JSON.stringify(dataToSave, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const timestamp = new Date().toISOString().slice(0, 10);
+    a.download = `keys-metadata-${timestamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setSaveMessage('Keys metadata saved (actual keys are not stored)');
+    setTimeout(() => setSaveMessage(''), 3000);
   }
 
-  const healthKeyMap = new Map<number, { status: string; lastCheckedAt: string | null }>()
-  for (const k of healthData?.keys ?? []) healthKeyMap.set(k.id, k)
+  function loadKeysFromFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      if (!target.files?.[0]) return;
+      const file = target.files[0];
+      const reader = new FileReader();
+      reader.onload = (loadEvent) => {
+        try {
+          const parsed = JSON.parse(loadEvent.target?.result as string);
+          if (!Array.isArray(parsed)) {
+            setLoadMessage('Invalid file format');
+            return;
+          }
+          let addedCount = 0;
+          parsed.forEach((keyData: { platform: string; key: string; label?: string }) => {
+            if (keyData.platform && keyData.key) {
+              apiFetch('/api/keys', {
+                method: 'POST',
+                body: JSON.stringify({
+                  platform: keyData.platform,
+                  key: keyData.key,
+                  label: keyData.label,
+                }),
+              });
+              addedCount++;
+            }
+          });
+          queryClient.invalidateQueries({ queryKey: ['keys'] });
+          queryClient.invalidateQueries({ queryKey: ['health'] });
+          setLoadMessage(`Loaded ${addedCount} keys`);
+        } catch {
+          setLoadMessage('Failed to parse file');
+        }
+        setTimeout(() => setLoadMessage(''), 3000);
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!platform || !apiKey) return;
+    if (needsAccountId && !accountId) return;
+    const key = needsAccountId ? `${accountId}:${apiKey}` : apiKey;
+    addKey.mutate({ platform, key, label: label || undefined });
+  };
+
+  const healthKeyMap = new Map<number, { status: string; lastCheckedAt: string | null }>();
+  for (const k of healthData?.keys ?? []) healthKeyMap.set(k.id, k);
 
   const grouped = PLATFORMS.map(p => ({
     ...p,
     keys: keys.filter(k => k.platform === p.value),
-  })).filter(p => p.keys.length > 0)
+  })).filter(p => p.keys.length > 0);
+
+  // Test results summary
+  const failedResults = testResults.filter(
+    r => r.status === 'invalid' || r.status === 'error'
+  );
 
   return (
     <div>
@@ -205,16 +295,129 @@ export default function KeysPage() {
         title="Keys"
         description="Provider credentials and the unified API key your apps connect with."
         actions={
-          keys.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
-              {checkAll.isPending ? 'Checking…' : 'Check all'}
+          <div className="flex gap-2">
+            {keys.length > 0 && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => checkAll.mutate()}
+                  disabled={checkAll.isPending}
+                >
+                  {checkAll.isPending ? 'Checking…' : 'Check all'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => testAllKeys.mutate()}
+                  disabled={testAllKeys.isPending}
+                >
+                  {testAllKeys.isPending ? 'Testing…' : 'Test all'}
+                </Button>
+              </>
+            )}
+            <Button variant="outline" size="sm" onClick={saveKeysToFile}>
+              Save Keys
             </Button>
-          )
+            <Button variant="outline" size="sm" onClick={loadKeysFromFile}>
+              Load Keys
+            </Button>
+          </div>
         }
       />
 
       <div className="space-y-8">
         <UnifiedKeySection />
+
+        {saveMessage && (
+          <div className="rounded-lg border border-emerald-500/50 bg-emerald-50 p-3 text-sm text-emerald-700">
+            {saveMessage}
+          </div>
+        )}
+        {loadMessage && (
+          <div className="rounded-lg border border-blue-500/50 bg-blue-50 p-3 text-sm text-blue-700">
+            {loadMessage}
+          </div>
+        )}
+
+        {/* Test Results Panel */}
+        {testResults.length > 0 && (
+          <section className="rounded-lg border p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-medium">Test Results</h2>
+              <Button variant="outline" size="sm" onClick={() => setTestResults([])}>
+                Clear
+              </Button>
+            </div>
+
+  // Summary
+  <div className="flex gap-4 mb-3 text-xs">
+    <span className="text-muted-foreground">
+      Tested: <strong>{testResults.length}</strong>
+    </span>
+    <span className="text-emerald-600">
+      Healthy: <strong>{testResults.filter(r => r.status === 'healthy').length}</strong>
+    </span>
+    <span className="text-amber-600">
+      Rate Limited: <strong>{testResults.filter(r => r.status === 'rate_limited').length}</strong>
+    </span>
+    <span className="text-rose-600">
+      Failed: <strong>{failedResults.length}</strong>
+    </span>
+  </div>
+
+            {/* Failed Keys Highlight */}
+            {failedResults.length > 0 && (
+              <div className="rounded-lg bg-rose-50 border border-rose-200 p-3 mb-3">
+                <h3 className="text-sm font-medium text-rose-800 mb-2">
+                  Failed Keys ({failedResults.length})
+                </h3>
+                {failedResults.map(r => {
+                  const key = keys.find(k => k.id === r.id);
+                  return (
+                    <div key={r.id} className="flex items-center gap-2 text-xs py-1">
+                      <span className="size-2 rounded-full bg-rose-500" />
+                      <span className="font-mono">{key?.maskedKey ?? 'N/A'}</span>
+                      <span className="text-muted-foreground">{key?.platform ?? 'Unknown'}</span>
+                      <span className="text-rose-600">{r.message ?? statusLabel[r.status]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Full Results Table */}
+            <div className="space-y-1">
+              {testResults.map(r => {
+                const key = keys.find(k => k.id === r.id);
+                const isFailed = r.status === 'invalid' || r.status === 'error';
+                return (
+                  <div
+                    key={r.id}
+                    className={`flex items-center gap-3 px-3 py-2 text-xs rounded ${
+                      isFailed ? 'bg-rose-50' : 'bg-card'
+                    }`}
+                  >
+                    <span className={`size-2 rounded-full ${statusDot[r.status]}`} />
+                    <span className="font-mono">{key?.maskedKey ?? 'N/A'}</span>
+                    <span className="text-muted-foreground">{key?.platform ?? 'Unknown'}</span>
+                    <span className={isFailed ? 'text-rose-600' : 'text-muted-foreground'}>
+                      {r.message ?? statusLabel[r.status]}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => checkKey.mutate(r.id)}
+                      disabled={checkKey.isPending}
+                    >
+                      Retest
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         <section>
           <h2 className="text-sm font-medium mb-3">Add a provider key</h2>
@@ -232,6 +435,7 @@ export default function KeysPage() {
                 </SelectContent>
               </Select>
             </div>
+
             {needsAccountId && (
               <div className="space-y-1.5">
                 <Label className="text-xs">Account ID</Label>
@@ -243,6 +447,7 @@ export default function KeysPage() {
                 />
               </div>
             )}
+
             <div className="space-y-1.5 flex-1 min-w-[240px]">
               <Label className="text-xs">{needsAccountId ? 'API token' : 'API key'}</Label>
               <Input
@@ -253,6 +458,7 @@ export default function KeysPage() {
                 className="font-mono text-xs"
               />
             </div>
+
             <div className="space-y-1.5">
               <Label className="text-xs">Label</Label>
               <Input
@@ -262,10 +468,16 @@ export default function KeysPage() {
                 className="w-[160px]"
               />
             </div>
-            <Button type="submit" size="sm" disabled={!platform || !apiKey || (needsAccountId && !accountId) || addKey.isPending}>
+
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!platform || !apiKey || (needsAccountId && !accountId) || addKey.isPending}
+            >
               {addKey.isPending ? 'Adding…' : 'Add key'}
             </Button>
           </form>
+
           {addKey.isError && (
             <p className="text-destructive text-xs mt-2">{(addKey.error as Error).message}</p>
           )}
@@ -291,13 +503,22 @@ export default function KeysPage() {
                       {group.keys.length} key{group.keys.length === 1 ? '' : 's'}
                     </span>
                   </div>
+
                   <div className="rounded-lg border divide-y bg-card overflow-hidden">
                     {group.keys.map(k => {
-                      const h = healthKeyMap.get(k.id)
-                      const status = h?.status ?? k.status
-                      const lastChecked = h?.lastCheckedAt
+                      const h = healthKeyMap.get(k.id);
+                      const status = h?.status ?? k.status;
+                      const lastChecked = h?.lastCheckedAt;
+                      const isFailed = testResults.some(
+                        r => r.id === k.id && (r.status === 'invalid' || r.status === 'error')
+                      );
                       return (
-                        <div key={k.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors">
+                        <div
+                          key={k.id}
+                          className={`flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors ${
+                            isFailed ? 'bg-rose-50' : ''
+                          }`}
+                        >
                           <span className={`size-1.5 rounded-full flex-shrink-0 ${statusDot[status] ?? statusDot.unknown}`} />
                           <code className="text-xs font-mono flex-shrink-0">{k.maskedKey}</code>
                           {k.label && <span className="text-xs text-muted-foreground">{k.label}</span>}
@@ -308,14 +529,25 @@ export default function KeysPage() {
                               {new Date(lastChecked).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </span>
                           )}
-                          <Button variant="ghost" size="xs" onClick={() => checkKey.mutate(k.id)} disabled={checkKey.isPending}>
-                            Check
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => checkKey.mutate(k.id)}
+                            disabled={checkKey.isPending}
+                          >
+                            Test
                           </Button>
-                          <Button variant="ghost" size="xs" className="text-muted-foreground hover:text-destructive" onClick={() => deleteKey.mutate(k.id)} disabled={deleteKey.isPending}>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="text-muted-foreground hover:text-destructive"
+                            onClick={() => deleteKey.mutate(k.id)}
+                            disabled={deleteKey.isPending}
+                          >
                             Remove
                           </Button>
                         </div>
-                      )
+                      );
                     })}
                   </div>
                 </div>
@@ -325,5 +557,5 @@ export default function KeysPage() {
         </section>
       </div>
     </div>
-  )
+  );
 }
