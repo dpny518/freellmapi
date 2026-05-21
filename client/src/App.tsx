@@ -2,12 +2,20 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import LoginPage, { getStoredKey } from '@/pages/LoginPage'
 import KeysPage from '@/pages/KeysPage'
 import PlaygroundPage from '@/pages/PlaygroundPage'
 import FallbackPage from '@/pages/FallbackPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
 
 const queryClient = new QueryClient()
+
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  if (!getStoredKey()) {
+    return <Navigate to="/login" replace />
+  }
+  return <>{children}</>
+}
 
 function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
   return (
@@ -87,11 +95,12 @@ function App() {
           </header>
           <main className="max-w-6xl mx-auto px-6 py-8">
             <Routes>
+              <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<Navigate to="/playground" replace />} />
-              <Route path="/playground" element={<PlaygroundPage />} />
-              <Route path="/keys" element={<KeysPage />} />
-              <Route path="/fallback" element={<FallbackPage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
+              <Route path="/playground" element={<AuthGuard><PlaygroundPage /></AuthGuard>} />
+              <Route path="/keys" element={<AuthGuard><KeysPage /></AuthGuard>} />
+              <Route path="/fallback" element={<AuthGuard><FallbackPage /></AuthGuard>} />
+              <Route path="/analytics" element={<AuthGuard><AnalyticsPage /></AuthGuard>} />
               <Route path="/test" element={<Navigate to="/playground" replace />} />
               <Route path="/health" element={<Navigate to="/keys" replace />} />
             </Routes>

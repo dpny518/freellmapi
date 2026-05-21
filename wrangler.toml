@@ -8,6 +8,10 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "freellmapi"
 database_id = "f735fce2-6ccd-47a6-bbb0-7f4ca1cb659a"
+migrations_dir = "workers/migrations"
+
+[ai]
+binding = "AI"
 
 [assets]
 directory = "client/dist"

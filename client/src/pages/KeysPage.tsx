@@ -59,30 +59,20 @@ interface HealthData {
 
 function UnifiedKeySection() {
   const queryClient = useQueryClient();
-  const [showKey, setShowKey] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const { data } = useQuery<{ apiKey: string }>({
-    queryKey: ['unified-key'],
-    queryFn: () => apiFetch('/api/settings/api-key'),
-  });
+  const [regenerated, setRegenerated] = useState(false);
 
   const regenerate = useMutation({
     mutationFn: () => apiFetch('/api/settings/api-key/regenerate', { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['unified-key'] }),
+    onSuccess: () => {
+      setRegenerated(true);
+      setTimeout(() => setRegenerated(false), 3000);
+      queryClient.invalidateQueries({ queryKey: ['unified-key'] });
+    },
   });
 
-  const apiKey = data?.apiKey ?? '';
-  const masked = apiKey ? apiKey.slice(0, 13) + '•'.repeat(32) : '…';
   const baseUrl = import.meta.env.DEV
     ? `http://${window.location.hostname}:${__SERVER_PORT__}/v1`
     : `${window.location.origin}/v1`;
-
-  function copy() {
-    navigator.clipboard.writeText(apiKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
 
   return (
     <section className="rounded-lg border bg-card p-5">
@@ -103,19 +93,17 @@ function UnifiedKeySection() {
         </Button>
       </div>
 
-      <div className="flex items-center gap-2">
-        <code className="flex-1 font-mono text-xs bg-muted px-3 py-2 rounded-md select-all truncate tabular-nums">
-          {showKey ? apiKey : masked}
-        </code>
-        <Button variant="outline" size="sm" onClick={() => setShowKey(!showKey)}>
-          {showKey ? 'Hide' : 'Show'}
-        </Button>
-        <Button variant="outline" size="sm" onClick={copy} className="ml-2">
-          {copied ? 'Copied' : 'Copy'}
-        </Button>
+      {regenerated && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-50 p-3 text-sm text-amber-800 mb-3">
+          Key regenerated. External clients using the old key will be rejected.
+        </div>
+      )}
+
+      <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground mb-4">
+        For security, the key is never displayed in the dashboard. To retrieve it, check your server logs after regeneration or generate a new one above.
       </div>
 
-      <div className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
+      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
         <span className="text-muted-foreground">Base URL</span>
         <code className="font-mono">{baseUrl}</code>
         <span className="text-muted-foreground">Endpoint</span>
