@@ -197,7 +197,7 @@ export class CloudflareProvider extends BaseProvider {
     return (data.result ?? []).map(m => {
       const props: Record<string, string> = {};
       for (const p of m.properties ?? []) props[p.property_id] = p.value;
-      const ctx = props.context_window ? parseInt(props.context_window, 10) : m.context_window;
+      const ctx = props.context_window ? parseInt(props.context_window, 10) : (m.context_window ?? NaN);
       return {
         id: m.name,
         name: m.name,
