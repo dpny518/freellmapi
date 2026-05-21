@@ -57,12 +57,6 @@ interface HealthData {
   keys: { id: number; platform: string; status: string; lastCheckedAt: string | null }[];
 }
 
-interface TestResult {
-  id: number;
-  status: 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unknown';
-  message?: string;
-}
-
 function UnifiedKeySection() {
   const queryClient = useQueryClient();
   const [showKey, setShowKey] = useState(false);
@@ -139,7 +133,6 @@ export default function KeysPage() {
   const [label, setLabel] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
   const [loadMessage, setLoadMessage] = useState('');
-  const [testResults, setTestResults] = useState<TestResult[]>([]);
   const needsAccountId = platform === 'cloudflare';
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
@@ -183,12 +176,21 @@ export default function KeysPage() {
     },
   });
 
-  const testAllKeys = useMutation({
-    mutationFn: () => apiFetch<TestResult[]>('/api/health/check-all', { method: 'POST' as const }),
-    onSuccess: (results) => {
-      setTestResults(results);
-      queryClient.invalidateQueries({ queryKey: ['health'] });
+  const clearAllKeys = useMutation({
+    mutationFn: () => apiFetch('/api/keys', { method: 'DELETE' }),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['keys'] });
+      queryClient.invalidateQueries({ queryKey: ['health'] });
+      queryClient.invalidateQueries({ queryKey: ['fallback'] });
+    },
+  });
+
+  const removeNonWorking = useMutation({
+    mutationFn: () => apiFetch('/api/keys/non-working', { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['keys'] });
+      queryClient.invalidateQueries({ queryKey: ['health'] });
+      queryClient.invalidateQueries({ queryKey: ['fallback'] });
     },
   });
 
@@ -201,28 +203,24 @@ export default function KeysPage() {
   });
 
   function saveKeysToFile() {
-    // Note: Actual API keys are not returned by the server for security.
-    // This saves metadata only (id, platform, label, status, etc.)
-    const dataToSave = keys.map(k => ({
-      id: k.id,
-      platform: k.platform,
-      label: k.label,
-      maskedKey: k.maskedKey,
-      status: k.status,
-    }));
-    const dataStr = JSON.stringify(dataToSave, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const timestamp = new Date().toISOString().slice(0, 10);
-    a.download = `keys-metadata-${timestamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setSaveMessage('Keys metadata saved (actual keys are not stored)');
-    setTimeout(() => setSaveMessage(''), 3000);
+    apiFetch<{ platform: string; key: string; label: string; status: string }[]>('/api/keys/export').then((exportedKeys) => {
+      const dataStr = JSON.stringify(exportedKeys, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const timestamp = new Date().toISOString().slice(0, 10);
+      a.download = `keys-backup-${timestamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSaveMessage(`Saved ${exportedKeys.length} keys`);
+      setTimeout(() => setSaveMessage(''), 3000);
+    }).catch(() => {
+      setSaveMessage('Failed to export keys');
+      setTimeout(() => setSaveMessage(''), 3000);
+    });
   }
 
   function loadKeysFromFile() {
@@ -284,11 +282,6 @@ export default function KeysPage() {
     keys: keys.filter(k => k.platform === p.value),
   })).filter(p => p.keys.length > 0);
 
-  // Test results summary
-  const failedResults = testResults.filter(
-    r => r.status === 'invalid' || r.status === 'error'
-  );
-
   return (
     <div>
       <PageHeader
@@ -309,10 +302,22 @@ export default function KeysPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => testAllKeys.mutate()}
-                  disabled={testAllKeys.isPending}
+                  onClick={() => removeNonWorking.mutate()}
+                  disabled={removeNonWorking.isPending}
                 >
-                  {testAllKeys.isPending ? 'Testing…' : 'Test all'}
+                  {removeNonWorking.isPending ? 'Removing…' : 'Remove non-working'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (window.confirm('Remove all keys? This cannot be undone.')) {
+                      clearAllKeys.mutate();
+                    }
+                  }}
+                  disabled={clearAllKeys.isPending}
+                >
+                  {clearAllKeys.isPending ? 'Clearing…' : 'Clear all'}
                 </Button>
               </>
             )}
@@ -338,85 +343,6 @@ export default function KeysPage() {
           <div className="rounded-lg border border-blue-500/50 bg-blue-50 p-3 text-sm text-blue-700">
             {loadMessage}
           </div>
-        )}
-
-        {/* Test Results Panel */}
-        {testResults.length > 0 && (
-          <section className="rounded-lg border p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-medium">Test Results</h2>
-              <Button variant="outline" size="sm" onClick={() => setTestResults([])}>
-                Clear
-              </Button>
-            </div>
-
-  // Summary
-  <div className="flex gap-4 mb-3 text-xs">
-    <span className="text-muted-foreground">
-      Tested: <strong>{testResults.length}</strong>
-    </span>
-    <span className="text-emerald-600">
-      Healthy: <strong>{testResults.filter(r => r.status === 'healthy').length}</strong>
-    </span>
-    <span className="text-amber-600">
-      Rate Limited: <strong>{testResults.filter(r => r.status === 'rate_limited').length}</strong>
-    </span>
-    <span className="text-rose-600">
-      Failed: <strong>{failedResults.length}</strong>
-    </span>
-  </div>
-
-            {/* Failed Keys Highlight */}
-            {failedResults.length > 0 && (
-              <div className="rounded-lg bg-rose-50 border border-rose-200 p-3 mb-3">
-                <h3 className="text-sm font-medium text-rose-800 mb-2">
-                  Failed Keys ({failedResults.length})
-                </h3>
-                {failedResults.map(r => {
-                  const key = keys.find(k => k.id === r.id);
-                  return (
-                    <div key={r.id} className="flex items-center gap-2 text-xs py-1">
-                      <span className="size-2 rounded-full bg-rose-500" />
-                      <span className="font-mono">{key?.maskedKey ?? 'N/A'}</span>
-                      <span className="text-muted-foreground">{key?.platform ?? 'Unknown'}</span>
-                      <span className="text-rose-600">{r.message ?? statusLabel[r.status]}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Full Results Table */}
-            <div className="space-y-1">
-              {testResults.map(r => {
-                const key = keys.find(k => k.id === r.id);
-                const isFailed = r.status === 'invalid' || r.status === 'error';
-                return (
-                  <div
-                    key={r.id}
-                    className={`flex items-center gap-3 px-3 py-2 text-xs rounded ${
-                      isFailed ? 'bg-rose-50' : 'bg-card'
-                    }`}
-                  >
-                    <span className={`size-2 rounded-full ${statusDot[r.status]}`} />
-                    <span className="font-mono">{key?.maskedKey ?? 'N/A'}</span>
-                    <span className="text-muted-foreground">{key?.platform ?? 'Unknown'}</span>
-                    <span className={isFailed ? 'text-rose-600' : 'text-muted-foreground'}>
-                      {r.message ?? statusLabel[r.status]}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => checkKey.mutate(r.id)}
-                      disabled={checkKey.isPending}
-                    >
-                      Retest
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
         )}
 
         <section>
@@ -509,9 +435,7 @@ export default function KeysPage() {
                       const h = healthKeyMap.get(k.id);
                       const status = h?.status ?? k.status;
                       const lastChecked = h?.lastCheckedAt;
-                      const isFailed = testResults.some(
-                        r => r.id === k.id && (r.status === 'invalid' || r.status === 'error')
-                      );
+                      const isFailed = status === 'invalid' || status === 'error';
                       return (
                         <div
                           key={k.id}

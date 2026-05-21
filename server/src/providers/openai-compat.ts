@@ -4,7 +4,7 @@ import type {
   ChatCompletionChunk,
   Platform,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type ProviderModel } from './base.js';
 
 /**
  * Generic provider for platforms that use an OpenAI-compatible API.
@@ -14,12 +14,16 @@ import { BaseProvider, type CompletionOptions } from './base.js';
 export class OpenAICompatProvider extends BaseProvider {
   readonly platform: Platform;
   readonly name: string;
-  private readonly baseUrl: string;
+  protected readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
   private readonly validateUrl?: string;
   /** Per-provider HTTP timeout override. Cloud APIs finish in ~15s; locally-hosted
    * inference (llama.cpp / vLLM on CPU) can take 30-120s for long prompts. Default 15000. */
   private readonly timeoutMs: number;
+
+  protected getBaseUrl(apiKey: string): string {
+    return this.baseUrl;
+  }
 
   constructor(opts: {
     platform: Platform;
@@ -44,7 +48,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const res = await this.fetchWithTimeout(`${this.getBaseUrl(apiKey)}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -80,7 +84,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const res = await this.fetchWithTimeout(`${this.getBaseUrl(apiKey)}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -137,7 +141,7 @@ export class OpenAICompatProvider extends BaseProvider {
     // Note: transport errors (DNS / timeout / TLS) propagate to the caller.
     // health.ts catches them and marks status='error' WITHOUT incrementing
     // the consecutive-failure counter — only confirmed 401/403 disables a key.
-    const url = this.validateUrl ?? `${this.baseUrl}/models`;
+    const url = this.validateUrl ?? `${this.getBaseUrl(apiKey)}/models`;
     const res = await this.fetchWithTimeout(url, {
       method: 'GET',
       headers: {
@@ -146,6 +150,25 @@ export class OpenAICompatProvider extends BaseProvider {
       },
     }, 10000);
     return res.status !== 401 && res.status !== 403;
+  }
+
+  override async listModels(apiKey: string): Promise<ProviderModel[]> {
+    const url = this.validateUrl ?? `${this.getBaseUrl(apiKey)}/models`;
+    const res = await this.fetchWithTimeout(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        ...this.extraHeaders,
+      },
+    }, 15000);
+    if (!res.ok) return [];
+    const data = await res.json() as { data?: Array<{ id: string; owned_by?: string; context_length?: number; max_model_len?: number }> };
+    return (data.data ?? []).map(m => ({
+      id: m.id,
+      name: m.id,
+      contextWindow: m.context_length ?? m.max_model_len,
+      properties: m.owned_by ? { owned_by: m.owned_by } : undefined,
+    }));
   }
 }
 

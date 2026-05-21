@@ -7,7 +7,7 @@ import type {
   ChatToolDefinition,
   TokenUsage,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type ProviderModel } from './base.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -426,5 +426,23 @@ export class GoogleProvider extends BaseProvider {
       10000,
     );
     return res.status !== 401 && res.status !== 403;
+  }
+
+  override async listModels(apiKey: string): Promise<ProviderModel[]> {
+    const res = await this.fetchWithTimeout(
+      `${API_BASE}/models?key=${apiKey}`,
+      { method: 'GET' },
+      15000,
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as { models?: Array<{ name: string; displayName?: string; inputTokenLimit?: number; outputTokenLimit?: number; supportedGenerationMethods?: string[] }> };
+    return (data.models ?? [])
+      .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+      .map(m => ({
+        id: m.name.replace('models/', ''),
+        name: m.displayName ?? m.name.replace('models/', ''),
+        contextWindow: (m.inputTokenLimit ?? 0) + (m.outputTokenLimit ?? 0) || undefined,
+        properties: { generationMethods: m.supportedGenerationMethods },
+      }));
   }
 }

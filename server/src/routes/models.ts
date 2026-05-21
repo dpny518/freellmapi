@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getDb } from '../db/index.js';
-import { hasProvider } from '../providers/index.js';
+import { getProvider, hasProvider } from '../providers/index.js';
+import { decrypt } from '../lib/crypto.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 export const modelsRouter = Router();
 
@@ -47,4 +49,45 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
   }));
 
   res.json(result);
+});
+
+// Discover live models from a provider's API
+modelsRouter.get('/discover/:platform', async (req: Request, res: Response) => {
+  const platform = req.params.platform as Platform;
+  if (!hasProvider(platform)) {
+    res.status(400).json({ error: { message: `Unknown platform: ${platform}` } });
+    return;
+  }
+
+  const provider = getProvider(platform);
+  if (!provider) {
+    res.status(400).json({ error: { message: `No provider registered for: ${platform}` } });
+    return;
+  }
+
+  const db = getDb();
+  const keyRow = db.prepare(`
+    SELECT encrypted_key, iv, auth_tag FROM api_keys
+    WHERE platform = ? AND enabled = 1 ORDER BY id LIMIT 1
+  `).get(platform) as { encrypted_key: string; iv: string; auth_tag: string } | undefined;
+
+  if (!keyRow) {
+    res.status(404).json({ error: { message: `No enabled API key found for ${platform}` } });
+    return;
+  }
+
+  let apiKey: string;
+  try {
+    apiKey = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
+  } catch {
+    res.status(500).json({ error: { message: 'Failed to decrypt API key' } });
+    return;
+  }
+
+  try {
+    const models = await provider.listModels(apiKey);
+    res.json({ platform, count: models.length, models });
+  } catch (err: any) {
+    res.status(500).json({ error: { message: err.message ?? 'Failed to fetch models' } });
+  }
 });

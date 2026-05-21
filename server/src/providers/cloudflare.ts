@@ -3,7 +3,27 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type ProviderModel } from './base.js';
+
+/**
+ * Fold reasoning_content into content when content is null/empty.
+ * Cloudflare reasoning models (kimi-k2, deepseek-r1-distill) return
+ * the actual answer in `message.reasoning_content` with `content: null`.
+ */
+function normalizeResponse(data: ChatCompletionResponse): void {
+  for (const choice of data.choices ?? []) {
+    const msg = choice.message as ChatMessage & {
+      reasoning_content?: string;
+      content: unknown;
+    };
+    const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+    if (!hasToolCalls && (msg.content === '' || msg.content == null)) {
+      if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.length > 0) {
+        msg.content = msg.reasoning_content;
+      }
+    }
+  }
+}
 
 /**
  * Cloudflare Workers AI provider.
@@ -61,6 +81,7 @@ export class CloudflareProvider extends BaseProvider {
     }
 
     const data = await res.json() as ChatCompletionResponse;
+    normalizeResponse(data);
     data._routed_via = { platform: 'cloudflare', model: modelId };
     return data;
   }
@@ -129,15 +150,62 @@ export class CloudflareProvider extends BaseProvider {
   async validateKey(apiKey: string): Promise<boolean> {
     // Transport errors propagate — health.ts marks status='error' without
     // counting toward auto-disable. Only confirmed bad/inactive tokens disable.
-    const { token } = this.parseKey(apiKey);
+    //
+    // cfat_ service tokens don't support /user/tokens/verify, so probe the
+    // Workers AI endpoint with a cheap model instead.
+    try {
+      const { accountId, token } = this.parseKey(apiKey);
+      const res = await this.fetchWithTimeout(
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: '@cf/meta/llama-3-8b-instruct',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 1,
+          }),
+        },
+        15000,
+      );
+      if (res.status === 401 || res.status === 403) return false;
+      if (!res.ok) return true; // unexpected non-2xx that isn't auth — don't disable
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  override async listModels(apiKey: string): Promise<ProviderModel[]> {
+    const { accountId, token } = this.parseKey(apiKey);
     const res = await this.fetchWithTimeout(
-      'https://api.cloudflare.com/client/v4/user/tokens/verify',
-      { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
-      10000,
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/models/search?per_page=500`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+      15000,
     );
-    if (res.status === 401 || res.status === 403) return false;
-    if (!res.ok) return true; // unexpected non-2xx that isn't auth — don't disable
-    const data = await res.json() as any;
-    return data.success === true && data.result?.status === 'active';
+    if (!res.ok) return [];
+    const data = await res.json() as { result?: Array<{ id: string; name: string; description?: string; context_window?: number; task?: { id: string; name: string }; properties?: Array<{ property_id: string; value: string }> }> };
+    return (data.result ?? []).map(m => {
+      const props: Record<string, string> = {};
+      for (const p of m.properties ?? []) props[p.property_id] = p.value;
+      const ctx = props.context_window ? parseInt(props.context_window, 10) : m.context_window;
+      return {
+        id: m.name,
+        name: m.name,
+        description: m.description,
+        contextWindow: isNaN(ctx) ? undefined : ctx,
+        task: m.task?.name,
+        properties: props,
+      };
+    });
   }
 }

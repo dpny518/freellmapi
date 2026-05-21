@@ -29,6 +29,10 @@ describe('Routing Key Exhaustion', () => {
     initDb(':memory:');
     const db = getDb();
     
+    // Clear out seeded data to isolate routing tests
+    db.prepare("DELETE FROM fallback_config").run();
+    db.prepare("DELETE FROM models").run();
+    
     // Setup: 2 models (Pro and Flash)
     // Pro is higher priority (priority 1), Flash is lower (priority 2)
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('google', 'gemini-1.5-pro', 'Pro', 1, 1, 1)").run();

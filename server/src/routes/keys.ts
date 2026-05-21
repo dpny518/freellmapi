@@ -49,6 +49,29 @@ keysRouter.get('/', (_req: Request, res: Response) => {
   res.json(keys);
 });
 
+// Export all keys (decrypted) for backup
+keysRouter.get('/export', (_req: Request, res: Response) => {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
+
+  const keys = rows.map(row => {
+    let key = '';
+    try {
+      key = decrypt(row.encrypted_key, row.iv, row.auth_tag);
+    } catch {
+      key = '[decrypt failed]';
+    }
+    return {
+      platform: row.platform,
+      key,
+      label: row.label,
+      status: row.status,
+    };
+  });
+
+  res.json(keys);
+});
+
 // Add a key
 keysRouter.post('/', (req: Request, res: Response) => {
   const parsed = addKeySchema.safeParse(req.body);
@@ -74,6 +97,20 @@ keysRouter.post('/', (req: Request, res: Response) => {
     status: 'unknown',
     enabled: true,
   });
+});
+
+// Delete all keys
+keysRouter.delete('/', (_req: Request, res: Response) => {
+  const db = getDb();
+  const result = db.prepare('DELETE FROM api_keys').run();
+  res.json({ success: true, deleted: result.changes });
+});
+
+// Delete non-working keys (not healthy)
+keysRouter.delete('/non-working', (_req: Request, res: Response) => {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM api_keys WHERE status != 'healthy'").run();
+  res.json({ success: true, deleted: result.changes });
 });
 
 // Delete a key

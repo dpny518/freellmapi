@@ -3,7 +3,7 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type ProviderModel } from './base.js';
 
 const API_BASE = 'https://api.cohere.ai/compatibility/v1';
 
@@ -113,5 +113,19 @@ export class CohereProvider extends BaseProvider {
       headers: { 'Authorization': `Bearer ${apiKey}` },
     }, 10000);
     return res.status !== 401 && res.status !== 403;
+  }
+
+  override async listModels(apiKey: string): Promise<ProviderModel[]> {
+    const res = await this.fetchWithTimeout(`${API_BASE}/models`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    }, 15000);
+    if (!res.ok) return [];
+    const data = await res.json() as { data?: Array<{ id: string; owned_by?: string }> };
+    return (data.data ?? []).map(m => ({
+      id: m.id,
+      name: m.id,
+      properties: m.owned_by ? { owned_by: m.owned_by } : undefined,
+    }));
   }
 }

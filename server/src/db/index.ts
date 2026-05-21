@@ -46,6 +46,8 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV9(db);
   migrateModelsV10(db);
   migrateModelsV11(db);
+  migrateModelsV12(db);
+  migrateModelsV13(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -926,6 +928,116 @@ function migrateModelsV11(db: Database.Database) {
       for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
     }
   });
+  apply();
+}
+
+/**
+ * V12 (May 2026): Add stable Google Gemini 3.x and 2.x models.
+ * - Adds gemini-3.5-flash, gemini-3.1-flash-lite, and gemini-2.0-flash.
+ * - Updates intelligence ranks for all Google models.
+ * - Re-sequences fallback_config priority.
+ */
+function migrateModelsV12(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    ['google', 'gemini-3.5-flash', 'Gemini 3.5 Flash', 2, 5, 'Large', 15, 20, 250000, null, '~3M', 1048576],
+    ['google', 'gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite', 8, 3, 'Medium', 15, 20, 250000, null, '~3M', 1048576],
+    ['google', 'gemini-2.0-flash', 'Gemini 2.0 Flash', 21, 5, 'Medium', 15, 20, 250000, null, '~3M', 1048576],
+  ];
+
+  const setRank = db.prepare(`UPDATE models SET intelligence_rank = ? WHERE platform = 'google' AND model_id = ?`);
+
+  const apply = db.transaction(() => {
+    // 1) Insert new models
+    for (const a of additions) insert.run(...a);
+
+    // 2) Update intelligence ranks for Google models to align with Gemini 3.5/3.1/2.x specs
+    setRank.run(1, 'gemini-3.1-pro-preview');
+    setRank.run(2, 'gemini-3.5-flash');
+    setRank.run(8, 'gemini-3.1-flash-lite');
+    setRank.run(11, 'gemini-3-flash-preview');
+    setRank.run(18, 'gemini-3.1-flash-lite-preview');
+    setRank.run(20, 'gemini-2.5-flash');
+    setRank.run(21, 'gemini-2.0-flash');
+    setRank.run(26, 'gemini-2.5-flash-lite');
+
+    // 3) Ensure all models have fallback configs
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+
+    // 4) Re-sequence the fallback config priorities based on the updated intelligence_rank
+    const allFallbacks = db.prepare(`
+      SELECT f.id FROM fallback_config f
+      JOIN models m ON f.model_db_id = m.id
+      ORDER BY m.intelligence_rank ASC, m.id ASC
+    `).all() as { id: number }[];
+
+    const updatePriority = db.prepare('UPDATE fallback_config SET priority = ? WHERE id = ?');
+    for (let i = 0; i < allFallbacks.length; i++) {
+      updatePriority.run(i + 1, allFallbacks[i].id);
+    }
+  });
+
+  apply();
+}
+
+/**
+ * V13 (May 2026): Seed the remaining Mistral free-tier (Experiment pool) model
+ * aliases that were missing from earlier migrations.
+ *
+ * Mistral's Experiment / La Plateforme free tier is shared ~1 B tokens/month
+ * across all models. RPM is capped at 1–2 per model by their free pool.
+ *
+ * New rows added:
+ *   - mistral-small-latest   (Mistral Small 3.2/4 — fast, low-latency)
+ *   - magistral-small-latest (Magistral Small 1.2 — lightweight reasoning)
+ *   - ministral-14b-latest   (Ministral 3 14B — edge powerhouse)
+ *
+ * Already present from earlier seeds / migrations (not re-inserted here):
+ *   - mistral-large-latest, mistral-medium-latest, magistral-medium-latest,
+ *     codestral-latest, devstral-latest
+ */
+function migrateModelsV13(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  // Experiment pool: 2 RPM / 500k TPM / ~1B tokens/mo shared.
+  // Speed ranks: 1–3 = very fast, 4–6 = medium, 7–10 = slow.
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    ['mistral', 'mistral-small-latest',   'Mistral Small 4',         22, 5, 'Small',  2, null, 500000, null, '~50-100M', 131072],
+    ['mistral', 'magistral-small-latest', 'Magistral Small',         20, 7, 'Small',  2, null, 500000, null, '~50-100M', 40000],
+    ['mistral', 'ministral-14b-latest',   'Ministral 3 14B',         18, 4, 'Medium', 2, null, 500000, null, '~50-100M', 131072],
+  ];
+
+  const apply = db.transaction(() => {
+    for (const a of additions) insert.run(...a);
+
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+  });
+
   apply();
 }
 

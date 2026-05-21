@@ -65,13 +65,19 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
     const testMessage: ChatMessage[] = [{ role: 'user', content: 'hello' }];
     let testResponse = undefined;
 
+    // Find the highest-priority enabled model for this platform to use as a probe
+    const modelRow = db.prepare(
+      'SELECT model_id FROM models WHERE platform = ? AND enabled = 1 ORDER BY intelligence_rank ASC LIMIT 1'
+    ).get(keyRow.platform) as { model_id: string } | undefined;
+    const modelId = modelRow?.model_id || 'gpt-4o-mini';
+
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        logger(keyId, `Attempt ${attempt + 1} - sending 'hello' to ${keyRow.platform}/${keyRow.model_id}`);
+        logger(keyId, `Attempt ${attempt + 1} - sending 'hello' to ${keyRow.platform}/${modelId}`);
         testResponse = await provider.chatCompletion(
           apiKey,
           testMessage,
-          keyRow.model_id || 'gpt-4o-mini' // Fallback to default model
+          modelId
         );
 
         logger(keyId, `Provider responded (attempt ${attempt + 1})`);
@@ -115,6 +121,13 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
   } catch (err: any) {
     // 4. Transport/network errors
     logger(keyId, `Transport error: ${err.message}`);
+    const msg = String(err.message ?? err).toLowerCase();
+    // Quota/rate-limit errors should be rate_limited, not error
+    if (msg.includes('quota exceeded') || msg.includes('rate limit') || msg.includes('resource_exhausted')) {
+      db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
+        .run('rate_limited', keyId);
+      return 'rate_limited';
+    }
     db.prepare('UPDATE api_keys SET status = ?, last_checked_at = datetime(\'now\') WHERE id = ?')
       .run('error', keyId);
     return 'error';

@@ -17,6 +17,16 @@ export interface CompletionOptions {
   parallel_tool_calls?: boolean;
 }
 
+export interface ProviderModel {
+  id: string;
+  name?: string;
+  description?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  task?: string;
+  properties?: Record<string, unknown>;
+}
+
 export abstract class BaseProvider {
   abstract readonly platform: Platform;
   abstract readonly name: string;
@@ -36,6 +46,10 @@ export abstract class BaseProvider {
   ): AsyncGenerator<ChatCompletionChunk>;
 
   abstract validateKey(apiKey: string): Promise<boolean>;
+
+  async listModels(apiKey: string): Promise<ProviderModel[]> {
+    return [];
+  }
 
   protected async fetchWithTimeout(
     url: string,
