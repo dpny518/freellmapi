@@ -4,13 +4,16 @@
   "workspaces": [
     "shared",
     "server",
-    "client"
+    "client",
+    "workers"
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev:workers": "npm run dev -w workers",
     "test": "npm run test -w server",
     "build": "npm run build -w server && npm run build -w client",
-    "build:server": "npm run build -w server"
+    "build:server": "npm run build -w server",
+    "deploy:workers": "npm run deploy -w workers"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

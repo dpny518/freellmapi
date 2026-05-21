@@ -1,0 +1,13 @@
+name = "freellmapi"
+account_id = "01be1770005ec3ab6291a2b3b9241aae"
+main = "workers/src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "freellmapi"
+database_id = "f735fce2-6ccd-47a6-bbb0-7f4ca1cb659a"
+
+[assets]
+directory = "client/dist"
