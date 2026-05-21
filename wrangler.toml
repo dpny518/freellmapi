@@ -11,3 +11,4 @@ database_id = "f735fce2-6ccd-47a6-bbb0-7f4ca1cb659a"
 
 [assets]
 directory = "client/dist"
+not_found_handling = "single-page-application"
